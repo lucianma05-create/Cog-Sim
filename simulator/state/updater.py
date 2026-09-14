@@ -37,45 +37,67 @@ def constrained_apply(
     applied_deltas: dict[str, float] = {}
 
     # ---- 1. 更新已有节点 ----
+    # v1.0.1-fix（修复提案 05 问题 2/3a/3b/5）：
+    # - 元素级类型守卫（问题 5）；
+    # - 轮级限幅：以轮初强度为基准核算净变化，重复更新合计不得突破 limits（问题 2）；
+    # - 激活判定移到幅度裁剪之后（问题 3a）；
+    # - 重新激活同样遵守容量上限，超限拒绝并记 note（问题 3b，拒绝方案）。
+    turn_start: dict[str, float] = {}
     for u in proposal.get("bdi_updates", []):
+        if not isinstance(u, dict):
+            notes.append("[robustness] bdi_updates 含非对象元素，忽略")
+            continue
         item_id = str(u.get("id", ""))
         item = state.find(item_id)
         if item is None:
             notes.append(f"跳过不存在节点 {item_id}")
             continue
-        new_s = clamp(u.get("new_strength", item.strength), STRENGTH_MIN, STRENGTH_MAX)
-        if not item.active:
-            # 已退役节点只允许被重新激活：强度需回升到阈值以上
-            if new_s >= DEACTIVATE_THRESHOLD + 0.2:
-                item.active = True
-                notes.append(f"{item_id} 强度回升至 {new_s:.2f}，重新激活")
-            else:
-                notes.append(f"跳过未激活节点 {item_id}（新强度 {new_s:.2f} 不足以重新激活）")
-                continue
-        delta = new_s - item.strength
+        try:
+            new_s = clamp(u.get("new_strength", item.strength), STRENGTH_MIN, STRENGTH_MAX)
+        except (TypeError, ValueError):
+            notes.append(f"[robustness] {item_id} new_strength 数值非法，忽略该更新")
+            continue
+        start = turn_start.setdefault(item_id, item.strength)
         cap = limits[item.type]
+        net = new_s - start
+        if abs(net) > cap:
+            net = cap * (1 if net > 0 else -1)
+            notes.append(f"{item_id} 本轮净变化 {new_s - start:+.2f} 超限 {cap}，截断为 {net:+.2f}")
+        final_s = start + net
 
-        # 幅度限制（文档 §31）
-        if abs(delta) > cap:
-            new_s = item.strength + cap * (1 if delta > 0 else -1)
-            notes.append(f"{item_id} 幅度 {delta:+.2f} 超限 {cap}，截断为 {new_s - item.strength:+.2f}")
+        if not item.active:
+            # 已退役节点只允许被重新激活：裁剪后的强度需回升到阈值以上（问题 3a）
+            if final_s >= DEACTIVATE_THRESHOLD + 0.2:
+                active_count = sum(1 for i in state.items(item.type) if i.active)
+                if active_count >= MAX_ITEMS[item.type]:
+                    notes.append(f"{item_id} 重新激活将使 {item.type} 活跃数超过上限 "
+                                 f"{MAX_ITEMS[item.type]}，拒绝激活")
+                    continue
+                item.active = True
+                notes.append(f"{item_id} 强度回升至 {final_s:.2f}，重新激活")
+            else:
+                notes.append(f"跳过未激活节点 {item_id}（裁剪后强度 {final_s:.2f} 不足以重新激活）")
+                continue
 
         # Judgment=Reject 方向限制（文档 §31）：被拒命题相关 core Belief 不允许正向更新
-        if judgment == "reject" and item.type == "belief" and item.id in related_belief_ids and new_s > item.strength:
-            notes.append(f"{item_id} 与被拒命题相关，禁止正向更新（{new_s - item.strength:+.2f} -> 0）")
-            new_s = item.strength
+        if judgment == "reject" and item.type == "belief" and item.id in related_belief_ids and final_s > item.strength:
+            notes.append(f"{item_id} 与被拒命题相关，禁止正向更新（{final_s - item.strength:+.2f} -> 0）")
+            final_s = item.strength
 
         # Peripheral 核心限制（文档 §31）：核心 Desire 不允许大幅改变
-        if route == "peripheral" and item.type == "desire" and judgment != "accept" and new_s != item.strength:
+        if route == "peripheral" and item.type == "desire" and judgment != "accept" and final_s != item.strength:
             notes.append(f"Peripheral+{judgment} 不允许修改核心 Desire {item_id}")
-            new_s = item.strength
+            final_s = item.strength
 
-        applied_deltas[item.id] = new_s - item.strength
-        item.strength = new_s
+        applied_deltas[item.id] = applied_deltas.get(item.id, 0.0) + (final_s - item.strength)
+        item.strength = final_s
 
     # ---- 2. 新增节点 ----
     new_intention_ids: set[str] = set()
     for n in proposal.get("new_items", []):
+        if not isinstance(n, dict):
+            notes.append("[robustness] new_items 含非对象元素，忽略")
+            continue
         type_ = str(n.get("type", "")).strip().lower()
         if type_ not in MAX_ITEMS:
             notes.append(f"未知节点类型 {type_!r}，拒绝新增")
@@ -84,7 +106,11 @@ def constrained_apply(
         if not content:
             notes.append("空内容节点，拒绝新增")
             continue
-        strength = clamp(n.get("strength", 1.0), STRENGTH_MIN, STRENGTH_MAX)
+        try:
+            strength = clamp(n.get("strength", 1.0), STRENGTH_MIN, STRENGTH_MAX)
+        except (TypeError, ValueError):
+            notes.append("[robustness] 新增节点 strength 数值非法，取默认 1.0")
+            strength = 1.0
         is_cue = bool(n.get("cue", False))
         is_core = bool(n.get("core", True))
         polarity = str(n.get("polarity", "approach")).strip().lower()
@@ -217,7 +243,7 @@ def _evict(state: UserState, type_: str, incoming: BDIItem) -> str:
     若 incoming 比所有现存活跃节点都弱且非核心，则拒绝新增（返回 "incoming"）。
     """
     lst = state.items(type_)
-    cands = sorted(lst, key=lambda i: (i.active, i.core, -i.strength))
+    cands = sorted(lst, key=lambda i: (i.active, i.core, i.strength))  # v1.0.1-fix（问题 4）：最弱优先
     victim = cands[0]
     if (not victim.active) or ((not victim.core) and incoming.strength >= victim.strength):
         lst.remove(victim)

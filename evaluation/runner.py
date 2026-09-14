@@ -349,7 +349,9 @@ def stage_components() -> dict:
     out = {"atc": run_atc(llm), "trie": run_trie(llm), "jee": run_jee(llm),
            "robustness": run_robustness()}
     (RESULTS / "components.json").write_text(json.dumps(out, ensure_ascii=False, indent=1))
-    print(f"[components] atc={out['atc']['accuracy']} trie={out['trie']['agreement']} "
+    # v1.0.1-fix：trie 返回无 'agreement' 键（v1.0 遗留打印 bug，数据在打印前已写入）
+    print(f"[components] atc={out['atc']['accuracy']} trie_acc={out['trie']['accuracy']} "
+          f"route_agreement={out['trie']['route_decision_stability']['overall']['route_agreement']} "
           f"jee={out['jee']['accuracy']} robustness={out['robustness']['passed']}/{out['robustness']['total']}")
     return out
 

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 from pathlib import Path
 
 from simulator.llm import LLMClient
@@ -74,6 +75,9 @@ SCENARIOS = {
 
 
 def build_state(sc: dict) -> UserState:
+    # v1.0.1-fix（修复提案 05 问题 1）：深拷贝场景，避免多次构造的状态之间
+    # 以及状态与模块级 SCENARIOS 之间共享 BDIItem 对象
+    sc = copy.deepcopy(sc)
     state = UserState(
         persona=sc["persona"],
         profile=sc["profile"],

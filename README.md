@@ -166,3 +166,14 @@ python -m evaluation.runner report           # 汇总生成 evaluation/reports/e
     问题；修正后 bargain 的 Reject 可达）。EUE category 消融结论：维持方案 A
     （LLM 提案 + (v,r) 校验），方案 B（程序主导）在 support 场景丢失场景语义
     （anxiety 被推导为 frustration）且无 token 收益，已否决。
+11. v1.0.1-fix（2026-09-14，CSTPO 修复提案 05 获批条目；只修 implementation
+    bug，不改提示与转移规则）：① `run_sim.build_state` 深拷贝场景，避免状态间
+    及与 SCENARIOS 共享 BDIItem 对象；② updater 更新已有节点改为轮级限幅
+    （重复更新合计不超过 limits）、激活判定移到裁剪后、重新激活遵守容量上限
+    （超限拒绝）、淘汰排序改为最弱优先；③ `constrained_apply` 增加
+    bdi_updates/new_items 元素级类型守卫与 new_strength/strength 数值守卫。
+    回归：6 项实现边界检查翻转 PASS，robustness 10/10，fault injection 12 例
+    TurnCrashRate=0；相对 v1.0 仅 `run_sim.py`、`state/updater.py` 变化。
+    指纹与实施记录见 CSTPO `experiments/results/fix_v1.0.1_fingerprint.json`
+    与修复提案 05。快照 API 由 CSTPO 侧 checkpoint 模块提供（集成要求，非本
+    仓库 API 承诺），本仓库不新增 snapshot 接口。
